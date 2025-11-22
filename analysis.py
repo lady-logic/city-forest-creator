@@ -235,3 +235,52 @@ def find_planting_locations(ausschlusszonen_dict, bounds, grid_spacing=20):
         return gdf
     else:
         return None
+    
+def calculate_tree_density_heatmap(bäume, bounds, grid_size=100):
+    """
+    Berechnet Baumdichte als Heatmap (inverse = Hitze-Proxy)
+    
+    Args:
+        bäume: GeoDataFrame mit Baumstandorten
+        bounds: [minx, miny, maxx, maxy]
+        grid_size: Rastergröße in Metern
+    
+    Returns:
+        GeoDataFrame mit Heatmap-Zellen (score: 0=viele Bäume, 1=keine Bäume)
+    """
+    from shapely.geometry import box
+    import numpy as np
+    
+    print(f"\n🔥 Berechne Hitze-Heatmap (Raster: {grid_size}m)...")
+    
+    minx, miny, maxx, maxy = bounds
+    x_coords = np.arange(minx, maxx, grid_size)
+    y_coords = np.arange(miny, maxy, grid_size)
+    
+    cells = []
+    scores = []
+    
+    # Erstelle Raster-Zellen
+    for x in x_coords:
+        for y in y_coords:
+            cell = box(x, y, x + grid_size, y + grid_size)
+            
+            # Zähle Bäume in Zelle
+            trees_in_cell = bäume[bäume.intersects(cell)]
+            tree_count = len(trees_in_cell)
+            
+            # Score: 0 = viele Bäume (kühl), 1 = keine Bäume (heiß)
+            # Normalisiere auf 0-1
+            score = 1 / (1 + tree_count * 0.1)  # Je mehr Bäume, desto niedriger
+            
+            cells.append(cell)
+            scores.append(score)
+    
+    gdf = gpd.GeoDataFrame({
+        'geometry': cells,
+        'heat_score': scores,
+        'tree_count': [len(bäume[bäume.intersects(c)]) for c in cells]
+    }, crs=bäume.crs)
+    
+    print(f"  ✓ {len(gdf)} Heatmap-Zellen berechnet")
+    return gdf

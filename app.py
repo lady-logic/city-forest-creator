@@ -105,6 +105,7 @@ if bäume is not None:
     st.sidebar.subheader("🔧 What-If-Analyse")
     st.sidebar.caption("Entsperre Zonen teilweise für mehr Pflanzfläche")
     
+    
     # Nur Zonen anbieten, die nicht der Baum-Puffer sind
     available_zones = [k for k in constraints.keys() if k != '🌳_Baum_Puffer']
     
@@ -127,6 +128,21 @@ if bäume is not None:
     
     if unlock_zones:
         st.sidebar.info(f"💡 {unlock_percentage}% von {len(unlock_zones)} Zone(n) entsperrt")
+    
+    # Prioritäts-Heatmap Optionen
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔥 Prioritäts-Heatmap")
+    show_heatmap = st.sidebar.checkbox("Zeige Hitze-Heatmap", value=False)
+
+    if show_heatmap:
+        heatmap_grid_size = st.sidebar.slider(
+            "Heatmap Rasterweite (m)",
+            min_value=50,
+            max_value=200,
+            value=100,
+            step=50,
+            help="Größere Zellen = schneller, aber gröber"
+        )
     
     # Statistiken
     st.sidebar.markdown("---")
@@ -201,6 +217,27 @@ if bäume is not None:
                 
                 st.sidebar.success(f"✓ {len(planting_locations_wgs84)} Standorte gefunden")
     
+    # Hitze-Heatmap berechnen
+    heatmap_wgs84 = None
+    if show_heatmap:
+        with st.spinner("Berechne Hitze-Heatmap..."):
+            from analysis import calculate_tree_density_heatmap
+            
+            heatmap = calculate_tree_density_heatmap(
+                bäume,
+                stats['bounds'],
+                heatmap_grid_size
+            )
+            
+            if heatmap is not None:
+                heatmap_wgs84 = heatmap.to_crs(epsg=4326)
+                
+                # Zeige Top 5 Hotspots
+                top_hotspots = heatmap.nlargest(5, 'heat_score')
+                st.sidebar.subheader("🔥 Top 5 Hitze-Hotspots")
+                for idx, row in top_hotspots.iterrows():
+                    st.sidebar.text(f"Score: {row['heat_score']:.2f} | {row['tree_count']} Bäume")
+    
     # Karte
     st.subheader("🗺️ Interaktive Karte")
     
@@ -263,6 +300,42 @@ if bäume is not None:
                 weight=1,
                 popup="Möglicher Pflanzstandort"
             ).add_to(marker_cluster)
+    
+    # Hitze-Heatmap (standardmäßig SICHTBAR):
+    if heatmap_wgs84 is not None:
+        import branca.colormap as cm
+        
+        # Farbskala: Blau (kühl) → Rot (heiß)
+        colormap = cm.LinearColormap(
+            colors=['blue', 'cyan', 'yellow', 'orange', 'red'],
+            vmin=0,
+            vmax=1,
+            caption='Hitze-Score (0=kühl, 1=heiß)'
+        )
+        
+        heatmap_group = folium.FeatureGroup(
+            name="🔥 Hitze-Heatmap",
+            overlay=True,
+            control=True,
+            show=True  # Standardmäßig AN
+        ).add_to(m)
+        
+        for idx, row in heatmap_wgs84.iterrows():
+            color = colormap(row['heat_score'])
+            
+            folium.GeoJson(
+                row['geometry'].__geo_interface__,
+                style_function=lambda x, c=color: {
+                    'fillColor': c,
+                    'color': c,
+                    'weight': 0.5,
+                    'fillOpacity': 0.5
+                },
+                tooltip=f"Hitze: {row['heat_score']:.2f} | Bäume: {row['tree_count']}"
+            ).add_to(heatmap_group)
+        
+        # Legende hinzufügen
+        colormap.add_to(m)
     
     # Ausschlusszonen (standardmäßig VERSTECKT)
     for idx, (key, zone_wgs84) in enumerate(ausschlusszonen_wgs84.items()):
