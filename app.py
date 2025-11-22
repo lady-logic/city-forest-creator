@@ -44,6 +44,27 @@ def load_all_data():
         return bäume, bäume_wgs84, constraints, stats
     return None, None, None, None
 
+# ⚡ OPTIMIERUNG: Cache für teure Berechnungen
+@st.cache_data
+def get_exclusion_zones(_bäume, _constraints, abstand_bäume, buffer_linien):
+    """Cached Berechnung der Ausschlusszonen"""
+    return find_suitable_locations(_bäume, _constraints, abstand_bäume, buffer_linien)
+
+@st.cache_data
+def compute_planting_locations(_zones_dict, bounds, grid_spacing, unlock_zones_tuple, unlock_percentage):
+    """
+    Cached Berechnung der Pflanzstandorte
+    ⚡ WICHTIG: unlock_zones als tuple für Hashbarkeit
+    """
+    from analysis import find_planting_locations, apply_zone_relaxation
+    
+    # What-If anwenden
+    unlock_zones = list(unlock_zones_tuple)  # Zurück zu Liste konvertieren
+    modified_zones = apply_zone_relaxation(_zones_dict, unlock_zones, unlock_percentage)
+    
+    # Pflanzstandorte berechnen
+    return find_planting_locations(modified_zones, bounds, grid_spacing)
+
 st.title("🌳 City Forest Creator")
 st.markdown("Finde geeignete Standorte für neue Bäume - **alle Dateien aus dem `constraints/` Ordner werden berücksichtigt!**")
 
@@ -64,19 +85,14 @@ buffer_linien = st.sidebar.slider(
     value=10
 )
 
-# ✅ DATEN ZUERST LADEN
+# Daten laden
 with st.spinner("Lade Geodaten..."):
     bäume, bäume_wgs84, constraints, stats = load_all_data()
 
 if bäume is not None:
-    # Ausschlusszonen berechnen
+    # ⚡ OPTIMIERUNG: Cached Ausschlusszonen-Berechnung
     with st.spinner(f"Berechne Ausschlusszonen..."):
-        ausschlusszonen_dict = find_suitable_locations(
-            bäume, 
-            constraints, 
-            abstand_bäume,
-            buffer_linien
-        )
+        ausschlusszonen_dict = get_exclusion_zones(bäume, constraints, abstand_bäume, buffer_linien)
         
         # Zu WGS84 konvertieren für Karte
         ausschlusszonen_wgs84 = {}
@@ -84,7 +100,7 @@ if bäume is not None:
             if zone is not None:
                 ausschlusszonen_wgs84[key] = zone.to_crs(epsg=4326)
     
-    # ✅ JETZT ERST What-If UI (constraints ist jetzt verfügbar!)
+    # What-If UI
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔧 What-If-Analyse")
     st.sidebar.caption("Entsperre Zonen teilweise für mehr Pflanzfläche")
@@ -149,39 +165,39 @@ if bäume is not None:
         )
         
         with st.spinner("Berechne Pflanzstandorte..."):
-            from analysis import find_planting_locations, apply_zone_relaxation
-            
-            # ✅ What-If: Zonen entsperren
-            modified_zones = apply_zone_relaxation(
+            # ⚡ OPTIMIERUNG: Nur EINE Berechnung, gecacht!
+            planting_locations = compute_planting_locations(
                 ausschlusszonen_dict,
-                unlock_zones,
-                unlock_percentage
-            )
-            
-            planting_locations = find_planting_locations(
-                modified_zones,
                 stats['bounds'],
-                grid_spacing
+                grid_spacing,
+                tuple(unlock_zones),  # Als tuple für Caching
+                unlock_percentage
             )
             
             if planting_locations is not None:
                 planting_locations_wgs84 = planting_locations.to_crs(epsg=4326)
                 
-                # ✅ Zeige Impact der What-If-Analyse
+                # ⚡ OPTIMIERUNG: Delta-Berechnung nur wenn What-If aktiv
                 if unlock_zones and unlock_percentage > 0:
-                    original_locations = find_planting_locations(
+                    # Berechne Original-Standorte (gecacht bei gleichen Parametern)
+                    original_locations = compute_planting_locations(
                         ausschlusszonen_dict,
                         stats['bounds'],
-                        grid_spacing
+                        grid_spacing,
+                        tuple([]),  # Keine entsperrten Zonen
+                        0
                     )
+                    
                     if original_locations is not None:
                         delta = len(planting_locations) - len(original_locations)
                         if delta > 0:
                             st.sidebar.success(f"🎯 What-If: +{delta} zusätzliche Standorte!")
                             co2_gain = delta * 22  # kg CO2 pro Baum/Jahr
                             st.sidebar.metric("🌍 Zusätzl. CO2/Jahr", f"{co2_gain:,} kg")
+                        elif delta < 0:
+                            st.sidebar.warning(f"⚠️ {abs(delta)} Standorte weniger")
                         else:
-                            st.sidebar.warning("⚠️ Keine zusätzlichen Standorte gefunden")
+                            st.sidebar.info("ℹ️ Keine Änderung")
                 
                 st.sidebar.success(f"✓ {len(planting_locations_wgs84)} Standorte gefunden")
     
@@ -207,7 +223,8 @@ if bäume is not None:
         show=True
     ).add_to(m)
     
-    sample_size = min(500, len(bäume_wgs84))
+    # ⚡ OPTIMIERUNG: Kleineres Sample für schnelleres Rendering
+    sample_size = min(300, len(bäume_wgs84))  # Reduziert von 500
     baum_sample = bäume_wgs84.sample(sample_size, random_state=42)
     
     for idx, row in baum_sample.iterrows():
@@ -231,8 +248,8 @@ if bäume is not None:
             show=False
         ).add_to(m)
         
-        # Sample für Performance (max 2000 Punkte)
-        sample_size = min(2000, len(planting_locations_wgs84))
+        # ⚡ OPTIMIERUNG: Aggressiveres Sampling für Performance
+        sample_size = min(1000, len(planting_locations_wgs84))  # Reduziert von 2000
         location_sample = planting_locations_wgs84.sample(sample_size, random_state=42) if len(planting_locations_wgs84) > sample_size else planting_locations_wgs84
         
         for idx, row in location_sample.iterrows():

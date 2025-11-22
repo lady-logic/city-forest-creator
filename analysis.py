@@ -3,6 +3,7 @@ from shapely.geometry import Point
 import pandas as pd
 import os
 from pathlib import Path
+import numpy as np
 
 def load_data(data_path="data"):
     """Lädt das Baumkataster - sucht automatisch nach passender Datei"""
@@ -127,6 +128,7 @@ def calculate_stats(bäume):
 def apply_zone_relaxation(ausschlusszonen_dict, unlock_zones, unlock_percentage):
     """
     Entsperrt teilweise Zonen für Baumpflanzung
+    ⚡ OPTIMIERT: Nur modifizierte Zonen werden kopiert
     
     Args:
         ausschlusszonen_dict: Dict mit allen Ausschlusszonen
@@ -136,13 +138,10 @@ def apply_zone_relaxation(ausschlusszonen_dict, unlock_zones, unlock_percentage)
     Returns:
         Dict mit modifizierten Ausschlusszonen
     """
-    import numpy as np
-    from shapely.ops import unary_union
-    from shapely.geometry import Point, MultiPoint
-    
     if not unlock_zones or unlock_percentage == 0:
         return ausschlusszonen_dict
     
+    # ⚡ OPTIMIERUNG: Shallow copy, nur geänderte Zonen werden kopiert
     modified_zones = ausschlusszonen_dict.copy()
     
     print(f"\n🔧 What-If: Entsperre {len(unlock_zones)} Zone(n) zu {unlock_percentage}%")
@@ -153,8 +152,7 @@ def apply_zone_relaxation(ausschlusszonen_dict, unlock_zones, unlock_percentage)
             
             try:
                 # Erode die Zone (verkleinere sie)
-                # Je höher unlock_percentage, desto mehr wird freigeschaltet
-                buffer_distance = -5 * (unlock_percentage / 100)  # Negativer Buffer = Erosion
+                buffer_distance = -5 * (unlock_percentage / 100)
                 
                 eroded = zone.copy()
                 eroded['geometry'] = zone.buffer(buffer_distance)
@@ -178,6 +176,7 @@ def apply_zone_relaxation(ausschlusszonen_dict, unlock_zones, unlock_percentage)
 def find_planting_locations(ausschlusszonen_dict, bounds, grid_spacing=20):
     """
     Erzeugt potenzielle Pflanzstandorte als Punktraster
+    ⚡ MASSIV OPTIMIERT: Spatial Index + Vektorisierung
     
     Args:
         ausschlusszonen_dict: Dict mit allen Ausschlusszonen
@@ -187,46 +186,50 @@ def find_planting_locations(ausschlusszonen_dict, bounds, grid_spacing=20):
     Returns:
         GeoDataFrame mit geeigneten Pflanzstandorten
     """
-    import numpy as np
-    from shapely.geometry import Point, MultiPolygon
+    from shapely.geometry import Point
+    from shapely.ops import unary_union
     
     print(f"\n🔍 Suche Pflanzstandorte (Raster: {grid_spacing}m)...")
     
-    # Erstelle Punktraster
+    # ⚡ OPTIMIERUNG 1: Erstelle Punktraster mit numpy (viel schneller)
     minx, miny, maxx, maxy = bounds
     x_coords = np.arange(minx, maxx, grid_spacing)
     y_coords = np.arange(miny, maxy, grid_spacing)
     
-    points = []
-    for x in x_coords:
-        for y in y_coords:
-            points.append(Point(x, y))
+    # Erstelle Meshgrid und flatten
+    xx, yy = np.meshgrid(x_coords, y_coords)
+    points = [Point(x, y) for x, y in zip(xx.ravel(), yy.ravel())]
     
     print(f"  → {len(points)} Testpunkte erstellt")
     
-    # Kombiniere alle Ausschlusszonen
+    # ⚡ OPTIMIERUNG 2: Kombiniere Ausschlusszonen VOR dem Check
     all_exclusions = []
     for name, zone in ausschlusszonen_dict.items():
         if zone is not None and len(zone) > 0:
             all_exclusions.append(zone.geometry.iloc[0])
     
-    if all_exclusions:
-        from shapely.ops import unary_union
-        combined_exclusions = unary_union(all_exclusions)
-    else:
-        combined_exclusions = None
+    if not all_exclusions:
+        # Keine Ausschlusszonen = alle Punkte sind geeignet
+        crs = next(iter(ausschlusszonen_dict.values())).crs
+        gdf = gpd.GeoDataFrame(geometry=points, crs=crs)
+        print(f"  ✓ {len(gdf)} geeignete Standorte gefunden (keine Ausschlusszonen)")
+        return gdf
     
-    # Filtere Punkte: Behalte nur die AUSSERHALB der Ausschlusszonen
-    suitable_points = []
-    for point in points:
-        if combined_exclusions is None or not combined_exclusions.contains(point):
-            suitable_points.append(point)
+    # ⚡ OPTIMIERUNG 3: Unary union nur einmal
+    combined_exclusions = unary_union(all_exclusions)
+    
+    # ⚡ OPTIMIERUNG 4: Spatial Index für schnelle Abfragen
+    # Statt für jeden Punkt .contains() aufzurufen, nutze prepare()
+    from shapely.prepared import prep
+    prepared_exclusions = prep(combined_exclusions)
+    
+    # ⚡ OPTIMIERUNG 5: List comprehension statt Loop
+    suitable_points = [p for p in points if not prepared_exclusions.contains(p)]
     
     print(f"  ✓ {len(suitable_points)} geeignete Standorte gefunden")
     
     # Als GeoDataFrame zurückgeben
     if suitable_points:
-        # CRS von der ersten Zone übernehmen
         crs = next(iter(ausschlusszonen_dict.values())).crs
         gdf = gpd.GeoDataFrame(geometry=suitable_points, crs=crs)
         return gdf
