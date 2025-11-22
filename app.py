@@ -195,23 +195,24 @@ def load_custom_css():
     /* Custom Header mit Gradient */
     .custom-header {
         background: linear-gradient(135deg, #2e7d32 0%, #4caf50 100%);
-        padding: 2rem;
+        padding: 1rem 2rem;  
         border-radius: 15px;
         color: white;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;  
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
     
     .custom-header h1 {
-        color: white !important;
-        margin: 0;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-    }
-    
+    color: white !important;
+    margin: 0;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    font-size: 2.5rem !important; 
+}
+
     .custom-header p {
         color: rgba(255,255,255,0.9);
-        font-size: 1.1rem;
-        margin-top: 0.5rem;
+        font-size: 1rem;  
+        margin-top: 0.3rem;  
         margin-bottom: 0;
     }
     
@@ -425,21 +426,7 @@ if bäume is not None:
     if unlock_zones:
         st.sidebar.info(f"💡 {unlock_percentage}% von {len(unlock_zones)} Zone(n) entsperrt")
     
-    # Prioritäts-Heatmap Optionen
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🔥 Prioritäts-Heatmap")
-    show_heatmap = st.sidebar.checkbox("Zeige Hitze-Heatmap", value=False)
-
-    heatmap_grid_size = 150
-    if show_heatmap:
-        heatmap_grid_size = st.sidebar.slider(
-            "Heatmap Rasterweite (m)",
-            min_value=50,
-            max_value=300,
-            value=150,
-            step=50,
-            help="Größere Zellen = schneller, aber gröber"
-        )
+    
     
     # Potenzielle Pflanzstandorte finden
     st.sidebar.markdown("---")
@@ -517,6 +504,22 @@ if bäume is not None:
                 else:
                     st.sidebar.success(f"✓ {len(planting_locations_wgs84):,} Standorte gefunden")
     
+    # Prioritäts-Heatmap Optionen
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔥 Prioritäts-Heatmap")
+    show_heatmap = st.sidebar.checkbox("Zeige Hitze-Heatmap", value=False)
+
+    heatmap_grid_size = 150
+    if show_heatmap:
+        heatmap_grid_size = st.sidebar.slider(
+            "Heatmap Rasterweite (m)",
+            min_value=50,
+            max_value=300,
+            value=150,
+            step=50,
+            help="Größere Zellen = schneller, aber gröber"
+        )
+    
     # Hitze-Heatmap berechnen
     heatmap_wgs84 = None
     if show_heatmap:
@@ -531,29 +534,151 @@ if bäume is not None:
                 st.sidebar.markdown("#### 🔥 Top 5 Hitze-Hotspots")
                 for idx, row in top_hotspots.iterrows():
                     st.sidebar.text(f"Score: {row['heat_score']:.2f} | {row['tree_count']} Bäume")
-    
-    # Zeige geladene Constraint-Layer
+
+    # Export & Berichte
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🚫 Ausschlusszonen")
-    loaded_count = sum(1 for v in constraints.values() if v is not None)
-    st.sidebar.metric("Geladene Dateien", loaded_count)
+    st.sidebar.markdown("### 📥 Export & Berichte")
     
-    if constraints:
-        for key, layer in constraints.items():
-            status = "✓" if layer is not None else "✗"
-            count = f"({len(layer)} Features)" if layer is not None else ""
-            is_unlocked = "🔓" if key in unlock_zones else ""
-            st.sidebar.text(f"{status} {key} {count} {is_unlocked}")
-    else:
-        st.sidebar.warning("Keine Constraints im 'constraints/' Ordner gefunden")
+    # ===== GeoJSON/CSV Export =====
+    if planting_locations_wgs84 is not None and len(planting_locations_wgs84) > 0:
+        with st.sidebar.expander("💾 Standorte exportieren", expanded=False):
+            st.caption(f"Exportiere {len(planting_locations_wgs84):,} Pflanzstandorte")
+            
+            # GeoJSON Export
+            geojson_str = planting_locations_wgs84.to_json()
+            
+            st.download_button(
+                label="📍 Download GeoJSON",
+                data=geojson_str,
+                file_name=f"heilbronn_pflanzstandorte_{len(planting_locations_wgs84)}.geojson",
+                mime="application/json",
+                help="Für QGIS, ArcGIS, Google Maps",
+                key="download_geojson"
+            )
+            
+            # CSV Export
+            import pandas as pd
+            csv_data = pd.DataFrame({
+                'id': range(1, len(planting_locations_wgs84) + 1),
+                'latitude': planting_locations_wgs84.geometry.y,
+                'longitude': planting_locations_wgs84.geometry.x,
+                'whatif_aktiv': 'Ja' if (unlock_zones and unlock_percentage > 0) else 'Nein',
+                'entsperrte_zonen': ', '.join(unlock_zones) if unlock_zones else 'Keine'
+            })
+            
+            st.download_button(
+                label="📊 Download CSV",
+                data=csv_data.to_csv(index=False),
+                file_name=f"heilbronn_standorte_{len(planting_locations_wgs84)}.csv",
+                mime="text/csv",
+                help="Für Excel, Google Sheets",
+                key="download_csv"
+            )
+            
+            st.success(f"✅ {len(planting_locations_wgs84):,} Standorte bereit zum Export")
     
-    if 'top_arten' in stats:
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("#### 🌲 Top 5 Baumarten")
-        st.sidebar.write(stats['top_arten'])
+    # ===== Email-Template =====
+    with st.sidebar.expander("✉️ Email-Vorlage", expanded=False):
+        st.caption("Erstelle Email für Stadtplanung")
+        
+        # Email-Text generieren
+        standorte_count = len(planting_locations_wgs84) if planting_locations_wgs84 is not None else 0
+        co2_gesamt = standorte_count * 22
+        
+        # Delta für What-If
+        delta_text = ""
+        if unlock_zones and unlock_percentage > 0 and original_locations_wgs84 is not None:
+            delta = len(planting_locations_wgs84) - len(original_locations_wgs84)
+            delta_co2 = delta * 22
+            delta_text = f"""
+WHAT-IF SZENARIO:
+- Durch Nutzung von {unlock_percentage}% der Zone(n): {', '.join(unlock_zones)}
+- Zusätzliche Bäume: +{delta}
+- Zusätzliche CO₂-Bindung: +{delta_co2:,} kg/Jahr
+- Trade-off: {int(delta * 0.5)} Parkplätze für {delta} Bäume
+"""
+        
+        email_betreff = "Baumpflanzung Heilbronn - Analyseergebnisse"
+        
+        email_text = f"""Betreff: {email_betreff}
+
+Sehr geehrte Damen und Herren,
+
+anbei die Ergebnisse unserer Standortanalyse für strategische Baumpflanzungen in Heilbronn.
+
+═══════════════════════════════════════
+KERNZAHLEN
+═══════════════════════════════════════
+- Analysierte Bäume: {stats['anzahl_bäume']:,}
+- Neue Pflanzstandorte identifiziert: {standorte_count:,}
+- CO₂-Bindung/Jahr: {co2_gesamt:,} kg (~{co2_gesamt/1000:.1f} Tonnen)
+- Ausschlusszonen berücksichtigt: {len([z for z in ausschlusszonen_dict.values() if z is not None])}
+{delta_text}
+═══════════════════════════════════════
+PRIORITÄTS-HOTSPOTS
+═══════════════════════════════════════
+Die Heatmap-Analyse zeigt die dringendsten Bereiche für Baumpflanzungen auf.
+Fokus auf Stadtteile mit höchstem Hitze-Score empfohlen.
+
+═══════════════════════════════════════
+NÄCHSTE SCHRITTE
+═══════════════════════════════════════
+1. Review der identifizierten Standorte
+2. Priorisierung nach Hitze-Hotspots
+3. Bürgerdialog bei Trade-off-Szenarien
+4. Pilot-Projekt starten (50-100 Bäume)
+
+═══════════════════════════════════════
+DATENEXPORT
+═══════════════════════════════════════
+Interaktive Karte: http://localhost:8501
+Export: GeoJSON/CSV verfügbar über die App
+
+Mit freundlichen Grüßen
+City Forest Creator Team
+Future City Hackathon 2025
+"""
+        
+        
+        # Mailto-Link
+        import urllib.parse
+        mailto_link = f"mailto:stadtplanung@heilbronn.de?subject={urllib.parse.quote(email_betreff)}&body={urllib.parse.quote(email_text)}"
+        
+        st.markdown(f"[📧 Email in Standard-Programm öffnen]({mailto_link})")
+        
+        # Copy-Button Alternative
+        st.caption("💡 Tipp: Text markieren und Strg+C zum Kopieren")
     
+    # Parkplatz vs. Baum Trade-off Visualisierung
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🌡️ Parkplatz vs. Baum")
+
+    if unlock_zones:
+        st.sidebar.markdown("""
+        **Ein Parkplatz (12m²) vs. Ein Baum:**
+        
+        🚗 **Parkplatz:**
+        - Speichert Hitze: +60°C Oberfläche
+        - Versiegelt Boden: 12m² Regenwasser-Verlust
+        - Luftqualität: 0 kg CO₂ gebunden
+        
+        🌳 **Baum:**
+        - Kühlt Umgebung: -2-3°C in 50m Radius
+        - Schattenfläche: ~60m² (5x Parkplatz!)
+        - Filtert Luft: 22 kg CO₂/Jahr + Feinstaub
+        - Immobilienwert: +3-8% in Baumalleen
+        - Lebensqualität: ❤️
+        """)
+        
+        # Rechner
+        parkplaetze = int(unlock_percentage / 100 * 500)  # Annahme: 500 Parkplätze in Zone
+        baeume = delta
+        
+        st.sidebar.metric("Trade-off", f"{parkplaetze} Parkplätze = {baeume} Bäume")
+        st.sidebar.caption(f"Das sind {int(baeume/parkplaetze*100)}% mehr Schattenfläche!")
+   
+   
     # Karte
-    st.markdown("## 🗺️ Interaktive Karte")
     
     center_lat = bäume_wgs84.geometry.y.mean()
     center_lon = bäume_wgs84.geometry.x.mean()
@@ -730,7 +855,14 @@ if bäume is not None:
     
     folium.LayerControl().add_to(m)
     
-    st_folium(m, width=1200, height=600, returned_objects=[])
+    # Berechne Bounds aller Bäume
+    bounds = [
+        [bäume_wgs84.geometry.y.min(), bäume_wgs84.geometry.x.min()],
+        [bäume_wgs84.geometry.y.max(), bäume_wgs84.geometry.x.max()]
+    ]
+    m.fit_bounds(bounds, padding=[50, 50])  # 50px Padding
+    
+    st_folium(m, width=1400, height=800, returned_objects=[])
     
     # Info
     st.info("""
