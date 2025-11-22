@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  city-forest-creator:
+    build:
+      context: .
+    container_name: city-forest-creator
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./constraints:/app/constraints
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
