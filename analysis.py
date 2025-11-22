@@ -124,6 +124,57 @@ def calculate_stats(bäume):
     
     return stats
 
+def apply_zone_relaxation(ausschlusszonen_dict, unlock_zones, unlock_percentage):
+    """
+    Entsperrt teilweise Zonen für Baumpflanzung
+    
+    Args:
+        ausschlusszonen_dict: Dict mit allen Ausschlusszonen
+        unlock_zones: Liste der zu entsperrenden Zonen-Namen
+        unlock_percentage: Prozent der Fläche, die genutzt werden darf (0-100)
+    
+    Returns:
+        Dict mit modifizierten Ausschlusszonen
+    """
+    import numpy as np
+    from shapely.ops import unary_union
+    from shapely.geometry import Point, MultiPoint
+    
+    if not unlock_zones or unlock_percentage == 0:
+        return ausschlusszonen_dict
+    
+    modified_zones = ausschlusszonen_dict.copy()
+    
+    print(f"\n🔧 What-If: Entsperre {len(unlock_zones)} Zone(n) zu {unlock_percentage}%")
+    
+    for zone_name in unlock_zones:
+        if zone_name in modified_zones and modified_zones[zone_name] is not None:
+            zone = modified_zones[zone_name]
+            
+            try:
+                # Erode die Zone (verkleinere sie)
+                # Je höher unlock_percentage, desto mehr wird freigeschaltet
+                buffer_distance = -5 * (unlock_percentage / 100)  # Negativer Buffer = Erosion
+                
+                eroded = zone.copy()
+                eroded['geometry'] = zone.buffer(buffer_distance)
+                
+                # Entferne leere Geometrien
+                eroded = eroded[~eroded.is_empty]
+                
+                if len(eroded) > 0:
+                    modified_zones[zone_name] = eroded
+                    print(f"  ✓ {zone_name}: {unlock_percentage}% entsperrt")
+                else:
+                    # Zone komplett entsperrt
+                    modified_zones[zone_name] = None
+                    print(f"  ✓ {zone_name}: Komplett entsperrt")
+                    
+            except Exception as e:
+                print(f"  ✗ {zone_name}: Fehler - {e}")
+    
+    return modified_zones
+
 def find_planting_locations(ausschlusszonen_dict, bounds, grid_spacing=20):
     """
     Erzeugt potenzielle Pflanzstandorte als Punktraster
