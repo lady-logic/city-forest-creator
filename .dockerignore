@@ -1,9 +1,0 @@
-__pycache__
-*.py[cod]
-venv/
-.git
-.gitignore
-.vscode/
-.idea/
-*.log
-.DS_Store
