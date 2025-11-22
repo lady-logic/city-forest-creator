@@ -299,22 +299,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Sidebar - Basis-Einstellungen
-st.sidebar.markdown("### ⚙️ Einstellungen")
+st.sidebar.markdown("### ⚙️ Haupteinstellungen")
 st.sidebar.markdown("---")
 
-abstand_bäume = st.sidebar.slider(
-    "Mindestabstand zu Bäumen (m)", 
-    min_value=2, 
-    max_value=10, 
-    value=5
-)
-
-buffer_linien = st.sidebar.slider(
-    "Buffer für Linien-Geometrien (m)", 
-    min_value=5, 
-    max_value=20, 
-    value=10
-)
+# Standardwerte für die Slider (werden später unten gesetzt)
+buffer_linien = 10
+abstand_bäume = 5
 
 with st.sidebar.expander("📥 Constraints hochladen", expanded=False):
     st.caption("Lade neue Ausschlusszonen hoch")
@@ -656,18 +646,6 @@ Future City Hackathon 2025
     if unlock_zones:
         st.sidebar.markdown("""
         **Ein Parkplatz (12m²) vs. Ein Baum:**
-        
-        🚗 **Parkplatz:**
-        - Speichert Hitze: +60°C Oberfläche
-        - Versiegelt Boden: 12m² Regenwasser-Verlust
-        - Luftqualität: 0 kg CO₂ gebunden
-        
-        🌳 **Baum:**
-        - Kühlt Umgebung: -2-3°C in 50m Radius
-        - Schattenfläche: ~60m² (5x Parkplatz!)
-        - Filtert Luft: 22 kg CO₂/Jahr + Feinstaub
-        - Immobilienwert: +3-8% in Baumalleen
-        - Lebensqualität: ❤️
         """)
         
         # Rechner
@@ -676,7 +654,29 @@ Future City Hackathon 2025
         
         st.sidebar.metric("Trade-off", f"{parkplaetze} Parkplätze = {baeume} Bäume")
         st.sidebar.caption(f"Das sind {int(baeume/parkplaetze*100)}% mehr Schattenfläche!")
-   
+    
+    # ===== ERWEITERTE EINSTELLUNGEN (GANZ UNTEN) =====
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("⚙️ Erweiterte Einstellungen", expanded=False):
+        st.caption("Technische Parameter für Analyse-Algorithmen")
+        
+        buffer_linien = st.slider(
+            "Buffer für Linien-Geometrien (m)", 
+            min_value=5, 
+            max_value=20, 
+            value=10,
+            help="Sicherheitsabstand zu Linien wie Straßen, Leitungen etc."
+        )
+        
+        abstand_bäume = st.slider(
+            "Mindestabstand zu Bäumen (m)", 
+            min_value=2, 
+            max_value=10, 
+            value=5,
+            help="Minimaler Abstand zwischen neuen Pflanzungen und existierenden Bäumen"
+        )
+        
+        st.info("💡 Diese Werte beeinflussen die Berechnung der Ausschlusszonen")
    
     # Karte
     
