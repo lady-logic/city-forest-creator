@@ -4,6 +4,12 @@ import folium
 from streamlit_folium import st_folium
 from analysis import load_data, load_all_constraints, find_suitable_locations, calculate_stats
 import random
+import os
+import zipfile
+import tempfile
+import shutil
+from pathlib import Path
+from io import BytesIO
 
 def gdf_to_clean_geojson(gdf):
     """Konvertiert GeoDataFrame zu sauberem GeoJSON ohne problematische Attribute"""
@@ -209,38 +215,6 @@ def load_custom_css():
         margin-bottom: 0;
     }
     
-    /* Feature Cards */
-    .feature-card {
-        text-align: center;
-        padding: 2rem;
-        background: white;
-        border-radius: 15px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        transition: all 0.3s ease;
-    }
-    
-    .feature-card:hover {
-        transform: translateY(-10px);
-        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-    }
-    
-    .feature-icon {
-        font-size: 3rem;
-        margin-bottom: 1rem;
-    }
-    
-    .feature-title {
-        color: #2e7d32;
-        margin: 1rem 0 0.5rem 0;
-        font-size: 1.3rem;
-        font-weight: 600;
-    }
-    
-    .feature-desc {
-        color: #666;
-        font-size: 0.95rem;
-    }
-    
     /* Animationen */
     @keyframes fadeIn {
         from { 
@@ -306,6 +280,12 @@ def compute_planting_locations(_zones_dict, bounds, grid_spacing, unlock_zones_t
     
     return find_planting_locations(modified_zones, bounds, grid_spacing)
 
+@st.cache_data
+def compute_heatmap(_bäume, bounds, grid_size):
+    """Cached Heatmap-Berechnung"""
+    from analysis import calculate_tree_density_heatmap
+    return calculate_tree_density_heatmap(_bäume, bounds, grid_size)
+
 # ✨ CUSTOM HEADER
 st.markdown("""
 <div class="custom-header">
@@ -335,6 +315,64 @@ buffer_linien = st.sidebar.slider(
     value=10
 )
 
+with st.sidebar.expander("📥 Constraints hochladen", expanded=False):
+    st.caption("Lade neue Ausschlusszonen hoch")
+    
+    uploaded_file = st.file_uploader(
+        "Shapefile als ZIP",
+        type=['zip'],
+        help="ZIP mit .shp, .dbf, .shx, .prj",
+        key="shapefile_upload"
+    )
+    
+    if uploaded_file is not None:
+        import zipfile
+        import tempfile
+        import shutil
+        from pathlib import Path
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # ZIP entpacken
+            with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            # Finde .shp Dateien
+            shp_files = list(Path(temp_dir).glob("**/*.shp"))
+            
+            if shp_files:
+                st.info(f"📂 Gefunden: {len(shp_files)} Shapefile(s)")
+                
+                # Zeige Dateinamen
+                for shp in shp_files:
+                    st.text(f"• {shp.name}")
+                
+                # Button zum Import
+                if st.button("✅ Importieren", key="import_btn"):
+                    # Kopiere alle Dateien
+                    os.makedirs("constraints", exist_ok=True)
+                    
+                    for shp_file in shp_files:
+                        base_name = shp_file.stem
+                        source_dir = shp_file.parent
+                        
+                        for ext in ['.shp', '.dbf', '.shx', '.prj', '.cpg', '.sbn', '.sbx']:
+                            source_file = source_dir / f"{base_name}{ext}"
+                            if source_file.exists():
+                                dest_file = Path("constraints") / source_file.name
+                                shutil.copy2(source_file, dest_file)
+                    
+                    st.success("✅ Import erfolgreich!")
+                    st.info("🔄 Lade Seite neu (F5) um Daten zu aktualisieren")
+                    
+                    # Automatisch neu laden nach 2 Sekunden
+                    import time
+                    time.sleep(2)
+                    st.cache_data.clear()
+                    st.rerun()
+            else:
+                st.error("❌ Keine .shp Dateien gefunden!")
+                st.caption("ZIP sollte enthalten: name.shp, name.dbf, name.shx, etc.")
+
 # Daten laden
 with st.spinner("Lade Geodaten..."):
     bäume, bäume_wgs84, constraints, stats = load_all_data()
@@ -348,6 +386,17 @@ if bäume is not None:
         for key, zone in ausschlusszonen_dict.items():
             if zone is not None:
                 ausschlusszonen_wgs84[key] = zone.to_crs(epsg=4326)
+    
+    # ✅ DASHBOARD OBEN in Sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📊 Live-Dashboard")
+    
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        st.metric("🌳 Bäume", f"{stats['anzahl_bäume']:,}")
+    with col2:
+        zones_count = len([z for z in ausschlusszonen_dict.values() if z is not None])
+        st.metric("🚫 Zonen", zones_count)
     
     # What-If UI
     st.sidebar.markdown("---")
@@ -381,6 +430,7 @@ if bäume is not None:
     st.sidebar.markdown("### 🔥 Prioritäts-Heatmap")
     show_heatmap = st.sidebar.checkbox("Zeige Hitze-Heatmap", value=False)
 
+    heatmap_grid_size = 150
     if show_heatmap:
         heatmap_grid_size = st.sidebar.slider(
             "Heatmap Rasterweite (m)",
@@ -391,13 +441,100 @@ if bäume is not None:
             help="Größere Zellen = schneller, aber gröber"
         )
     
-    # Statistiken
+    # Potenzielle Pflanzstandorte finden
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📊 Statistiken")
-    st.sidebar.metric("Anzahl Bäume", f"{stats['anzahl_bäume']:,}")
+    show_planting_locations = st.sidebar.checkbox("🌱 Zeige Pflanzstandorte", value=True)
+    
+    planting_locations_wgs84 = None
+    original_locations_wgs84 = None
+    
+    if show_planting_locations:
+        grid_spacing = st.sidebar.slider(
+            "Rasterabstand (m)", 
+            min_value=15,  
+            max_value=50, 
+            value=25,  
+            help="Kleinerer Wert = mehr Punkte (langsamer). Empfohlen: 20-30m"
+        )
+        
+        with st.spinner("Berechne Pflanzstandorte..."):
+            # Berechne aktuelle Standorte (mit What-If)
+            planting_locations = compute_planting_locations(
+                ausschlusszonen_dict,
+                stats['bounds'],
+                grid_spacing,
+                tuple(unlock_zones),
+                unlock_percentage
+            )
+            
+            if planting_locations is not None:
+                planting_locations_wgs84 = planting_locations.to_crs(epsg=4326)
+                
+                # ✅ WHAT-IF IMPACT - PROMINENT
+                if unlock_zones and unlock_percentage > 0:
+                    original_locations = compute_planting_locations(
+                        ausschlusszonen_dict,
+                        stats['bounds'],
+                        grid_spacing,
+                        tuple([]),
+                        0
+                    )
+                    
+                    if original_locations is not None:
+                        original_locations_wgs84 = original_locations.to_crs(epsg=4326)
+                        delta = len(planting_locations) - len(original_locations)
+                        
+                        # ✅ PROMINENT Impact Box
+                        st.sidebar.markdown("---")
+                        st.sidebar.markdown("### 🎯 What-If Impact")
+                        
+                        if delta > 0:
+                            col1, col2 = st.sidebar.columns(2)
+                            with col1:
+                                st.metric(
+                                    "Neue Standorte", 
+                                    f"{len(planting_locations):,}",
+                                    delta=f"+{delta}",
+                                    delta_color="normal"
+                                )
+                            with col2:
+                                co2_gain = delta * 22
+                                st.metric(
+                                    "CO₂/Jahr", 
+                                    f"{co2_gain/1000:.1f} t",
+                                    delta=f"+{co2_gain:,} kg",
+                                    delta_color="normal"
+                                )
+                            
+                            # Trade-off Visualisierung
+                            st.sidebar.progress(unlock_percentage / 100)
+                            st.sidebar.caption(f"💡 {unlock_percentage}% der Zone(n) genutzt = **+{delta} Bäume**")
+                            
+                        elif delta < 0:
+                            st.sidebar.error(f"⚠️ {abs(delta)} Standorte weniger")
+                        else:
+                            st.sidebar.info("ℹ️ Keine Änderung")
+                else:
+                    st.sidebar.success(f"✓ {len(planting_locations_wgs84):,} Standorte gefunden")
+    
+    # Hitze-Heatmap berechnen
+    heatmap_wgs84 = None
+    if show_heatmap:
+        with st.spinner("Berechne Hitze-Heatmap..."):
+            heatmap = compute_heatmap(bäume, stats['bounds'], heatmap_grid_size)
+            
+            if heatmap is not None:
+                heatmap_wgs84 = heatmap.to_crs(epsg=4326)
+                
+                top_hotspots = heatmap.nlargest(5, 'heat_score')
+                st.sidebar.markdown("---")
+                st.sidebar.markdown("#### 🔥 Top 5 Hitze-Hotspots")
+                for idx, row in top_hotspots.iterrows():
+                    st.sidebar.text(f"Score: {row['heat_score']:.2f} | {row['tree_count']} Bäume")
     
     # Zeige geladene Constraint-Layer
-    st.sidebar.markdown("#### 🚫 Ausschlusszonen")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🚫 Ausschlusszonen")
     loaded_count = sum(1 for v in constraints.values() if v is not None)
     st.sidebar.metric("Geladene Dateien", loaded_count)
     
@@ -411,75 +548,9 @@ if bäume is not None:
         st.sidebar.warning("Keine Constraints im 'constraints/' Ordner gefunden")
     
     if 'top_arten' in stats:
+        st.sidebar.markdown("---")
         st.sidebar.markdown("#### 🌲 Top 5 Baumarten")
         st.sidebar.write(stats['top_arten'])
-    
-    # Potenzielle Pflanzstandorte finden
-    show_planting_locations = st.sidebar.checkbox("🌱 Zeige Pflanzstandorte", value=True)
-    
-    planting_locations_wgs84 = None
-    if show_planting_locations:
-        grid_spacing = st.sidebar.slider(
-            "Rasterabstand (m)", 
-            min_value=15,  
-            max_value=50, 
-            value=25,  
-            help="Kleinerer Wert = mehr Punkte (langsamer). Empfohlen: 20-30m"
-        )
-        
-        with st.spinner("Berechne Pflanzstandorte..."):
-            planting_locations = compute_planting_locations(
-                ausschlusszonen_dict,
-                stats['bounds'],
-                grid_spacing,
-                tuple(unlock_zones),
-                unlock_percentage
-            )
-            
-            if planting_locations is not None:
-                planting_locations_wgs84 = planting_locations.to_crs(epsg=4326)
-                
-                if unlock_zones and unlock_percentage > 0:
-                    original_locations = compute_planting_locations(
-                        ausschlusszonen_dict,
-                        stats['bounds'],
-                        grid_spacing,
-                        tuple([]),
-                        0
-                    )
-                    
-                    if original_locations is not None:
-                        delta = len(planting_locations) - len(original_locations)
-                        if delta > 0:
-                            st.sidebar.success(f"🎯 What-If: +{delta} zusätzliche Standorte!")
-                            co2_gain = delta * 22
-                            st.sidebar.metric("🌍 Zusätzl. CO2/Jahr", f"{co2_gain:,} kg")
-                        elif delta < 0:
-                            st.sidebar.warning(f"⚠️ {abs(delta)} Standorte weniger")
-                        else:
-                            st.sidebar.info("ℹ️ Keine Änderung")
-                
-                st.sidebar.success(f"✓ {len(planting_locations_wgs84):,} Standorte gefunden")
-    
-    # Hitze-Heatmap berechnen
-    heatmap_wgs84 = None
-    if show_heatmap:
-        with st.spinner("Berechne Hitze-Heatmap..."):
-            from analysis import calculate_tree_density_heatmap
-            
-            heatmap = calculate_tree_density_heatmap(
-                bäume,
-                stats['bounds'],
-                heatmap_grid_size
-            )
-            
-            if heatmap is not None:
-                heatmap_wgs84 = heatmap.to_crs(epsg=4326)
-                
-                top_hotspots = heatmap.nlargest(5, 'heat_score')
-                st.sidebar.markdown("#### 🔥 Top 5 Hitze-Hotspots")
-                for idx, row in top_hotspots.iterrows():
-                    st.sidebar.text(f"Score: {row['heat_score']:.2f} | {row['tree_count']} Bäume")
     
     # Karte
     st.markdown("## 🗺️ Interaktive Karte")
@@ -501,15 +572,14 @@ if bäume is not None:
         show=True
     ).add_to(m)
     
-   # ⚡ Adaptives Sampling basierend auf Zoom-Level
+    # Adaptives Sampling
     if len(bäume_wgs84) > 10000:
-        sample_size = 200  # Große Stadt: weniger Marker
+        sample_size = 200
     elif len(bäume_wgs84) > 5000:
         sample_size = 300
     else:
         sample_size = min(500, len(bäume_wgs84))
 
-    baum_sample = bäume_wgs84.sample(sample_size, random_state=42)
     baum_sample = bäume_wgs84.sample(sample_size, random_state=42)
     
     for idx, row in baum_sample.iterrows():
@@ -522,15 +592,47 @@ if bäume is not None:
             weight=0
         ).add_to(baum_group)
     
-    # Pflanzstandorte
-    if planting_locations_wgs84 is not None:
+    # ✅ ORIGINAL-Standorte (wenn What-If aktiv) - in GRAU
+    if original_locations_wgs84 is not None:
         from folium.plugins import MarkerCluster
         
-        marker_cluster = MarkerCluster(
-            name="🌱 Potenzielle Pflanzstandorte",
+        original_cluster = MarkerCluster(
+            name="🔵 Basis-Standorte (ohne What-If)",
             overlay=True,
             control=True,
             show=False
+        ).add_to(m)
+        
+        sample_size = min(500, len(original_locations_wgs84))
+        original_sample = original_locations_wgs84.sample(sample_size, random_state=42) if len(original_locations_wgs84) > sample_size else original_locations_wgs84
+        
+        for idx, row in original_sample.iterrows():
+            folium.CircleMarker(
+                location=[row.geometry.y, row.geometry.x],
+                radius=3,
+                color='gray',
+                fill=True,
+                fillColor='lightgray',
+                fillOpacity=0.5,
+                weight=1,
+                popup="Basis-Standort (ohne What-If)"
+            ).add_to(original_cluster)
+    
+    # ✅ NEUE Pflanzstandorte (mit What-If) - FARBIG
+    if planting_locations_wgs84 is not None:
+        from folium.plugins import MarkerCluster
+        
+        # Farbe abhängig von What-If
+        is_whatif = unlock_zones and unlock_percentage > 0
+        marker_color = 'green' if is_whatif else 'blue'
+        fill_color = 'lightgreen' if is_whatif else 'lightblue'
+        layer_name = "🌱 Pflanzstandorte (mit What-If!)" if is_whatif else "🌱 Potenzielle Pflanzstandorte"
+        
+        marker_cluster = MarkerCluster(
+            name=layer_name,
+            overlay=True,
+            control=True,
+            show=True
         ).add_to(m)
         
         sample_size = min(1000, len(planting_locations_wgs84))
@@ -540,15 +642,15 @@ if bäume is not None:
             folium.CircleMarker(
                 location=[row.geometry.y, row.geometry.x],
                 radius=4,
-                color='blue',
+                color=marker_color,
                 fill=True,
-                fillColor='lightblue',
-                fillOpacity=0.7,
+                fillColor=fill_color,
+                fillOpacity=0.8,
                 weight=1,
-                popup="Möglicher Pflanzstandort"
+                popup="Pflanzstandort" + (" (mit What-If entsperrt!)" if is_whatif else "")
             ).add_to(marker_cluster)
     
-    # Hitze-Heatmap
+    # ✅ Hitze-Heatmap (nur Hotspots > 0.3)
     if heatmap_wgs84 is not None:
         import branca.colormap as cm
         
@@ -566,7 +668,13 @@ if bäume is not None:
             show=True
         ).add_to(m)
         
-        for idx, row in heatmap_wgs84.iterrows():
+        # Nur Hotspots rendern
+        hot_cells = heatmap_wgs84[heatmap_wgs84['heat_score'] > 0.3]
+        
+        if len(hot_cells) > 200:
+            hot_cells = hot_cells.nlargest(200, 'heat_score')
+        
+        for idx, row in hot_cells.iterrows():
             color = colormap(row['heat_score'])
             
             folium.GeoJson(
@@ -575,14 +683,16 @@ if bäume is not None:
                     'fillColor': c,
                     'color': c,
                     'weight': 0.5,
-                    'fillOpacity': 0.5
+                    'fillOpacity': 0.6
                 },
                 tooltip=f"Hitze: {row['heat_score']:.2f} | Bäume: {row['tree_count']}"
             ).add_to(heatmap_group)
         
         colormap.add_to(m)
+        
+        st.caption(f"🔥 Zeige {len(hot_cells)} von {len(heatmap_wgs84)} Heatmap-Zellen (nur Hotspots > 0.3)")
     
-    # Ausschlusszonen
+    # ✅ Ausschlusszonen mit STÄRKEREM Highlight
     for idx, (key, zone_wgs84) in enumerate(ausschlusszonen_wgs84.items()):
         if zone_wgs84 is not None:
             if '🌳' in key or 'Baum' in key:
@@ -610,9 +720,9 @@ if bäume is not None:
                     style_function=lambda x, c=color, fc=fill_color, u=is_unlocked: {
                         'fillColor': fc,
                         'color': c,
-                        'weight': 3 if u else 2,
-                        'fillOpacity': 0.3 if u else 0.4,
-                        'dashArray': '5, 5' if u else None
+                        'weight': 4 if u else 2,
+                        'fillOpacity': 0.2 if u else 0.4,
+                        'dashArray': '10, 5' if u else None
                     }
                 ).add_to(zone_group)
             except Exception as e:
@@ -625,17 +735,19 @@ if bäume is not None:
     # Info
     st.info("""
     **Legende:**
-    - 🔵 **Blaue Punkte** = Mögliche Pflanzstandorte (außerhalb aller Ausschlusszonen!)
-    - 🟢 **Grüne Punkte** = Bestehende Bäume (Stichprobe)
+    - 🟢 **Grüne Punkte (Pflanzstandorte)** = Mit What-If entsperrt! (Neue Flächen)
+    - 🔵 **Blaue Punkte** = Basis-Pflanzstandorte (ohne What-If)
+    - ⚪ **Graue Punkte** = Original-Standorte zum Vergleich (ausblendbar)
+    - 🌳 **Dunkelgrüne Punkte** = Bestehende Bäume (Stichprobe)
     - 🟢 **Hellgrün** = Baum-Puffer (Mindestabstand)
     - 🔴 **Rote/Orange Bereiche** = Ausschlusszonen
-    - 🔓 **Gestrichelte Bereiche** = Entsperrte Zonen (What-If)
+    - 🔓 **Dick gestrichelt** = Entsperrte Zonen (What-If aktiv!)
     - 🔥 **Heatmap-Farben** = Blau (viele Bäume/kühl) → Rot (keine Bäume/heiß)
     
     💡 **Tipp:** 
     - Nutze die Layer-Steuerung oben rechts zum Ein-/Ausblenden
-    - Klicke auf Punkt-Cluster zum Reinzoomen
-    - What-If: Entsperre Zonen wie Parkplätze/Rasen für mehr Pflanzfläche!
+    - Aktiviere "Basis-Standorte" für direkten Vergleich
+    - What-If-Impact siehst du SOFORT in der Sidebar oben!
     """)
     
     # Zusammenfassung
@@ -650,6 +762,15 @@ if bäume is not None:
         st.metric("📏 Baum-Abstand", f"{abstand_bäume} m")
     with col4:
         if planting_locations_wgs84 is not None:
-            st.metric("🌱 Pflanzstandorte", f"{len(planting_locations_wgs84):,}")
+            # Zeige Delta wenn What-If aktiv
+            if original_locations_wgs84 is not None:
+                delta = len(planting_locations_wgs84) - len(original_locations_wgs84)
+                st.metric(
+                    "🌱 Pflanzstandorte", 
+                    f"{len(planting_locations_wgs84):,}",
+                    delta=f"+{delta}" if delta > 0 else None
+                )
+            else:
+                st.metric("🌱 Pflanzstandorte", f"{len(planting_locations_wgs84):,}")
         else:
             st.metric("🌱 Pflanzstandorte", "—")
