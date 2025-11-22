@@ -1,0 +1,9 @@
+*.cpg
+*.dbf
+*.prj
+*.shp
+*.shx
+*.sbn
+*.sbx
+*.fbn
+*.pyc
