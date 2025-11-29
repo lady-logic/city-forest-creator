@@ -60,6 +60,12 @@ Diese Daten existieren zwar in GIS-Systemen, sind aber oft:
 
 ---
 
+## 📸 Screenshots
+
+### Hauptansicht: Interaktive Karte
+![Hauptansicht](screenshots/main-view.png)
+*Übersicht mit allen Constraint-Layern und identifizierten Pflanzstandorten*
+
 ## 💡 Unsere Lösung: City Forest Creator
 
 Eine **interaktive Web-App**, die komplexe Geo-Daten in **actionable insights** verwandelt und Stadtplaner:innen bei der optimalen Baumpflanzung unterstützt.
